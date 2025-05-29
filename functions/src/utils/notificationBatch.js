@@ -23,7 +23,6 @@ async function addToPendingNotifications(userId, type, data) {
           notifications: [{
             type,
             data,
-            timestamp: admin.firestore.FieldValue.serverTimestamp()
           }],
           lastUpdated: admin.firestore.FieldValue.serverTimestamp()
         });
@@ -35,7 +34,6 @@ async function addToPendingNotifications(userId, type, data) {
         notifications.push({
           type,
           data,
-          timestamp: admin.firestore.FieldValue.serverTimestamp()
         });
         
         transaction.update(batchRef, { 
