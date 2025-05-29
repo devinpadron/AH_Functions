@@ -69,7 +69,7 @@ exports.notifyEventChanged = onDocumentWritten({
         `The event "${beforeData.title || "Unnamed Event"}" has been updated. Check the details.`,
         {
             eventId: eventId,
-            screenName: "EventDetails",
+            screenName: "Details",
             companyId: event.params.companyId,
             type: "update",
             changedFields: changedFields.join(",")
