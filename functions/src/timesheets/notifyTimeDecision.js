@@ -2,6 +2,7 @@ const {onDocumentWritten} = require("firebase-functions/v2/firestore");
 const logger = require("firebase-functions/logger");
 const {addToPendingNotifications} = require("../utils/notificationBatch");
 const moment = require("moment");
+const { user } = require("firebase-functions/v1/auth");
 
 exports.notifyTimeDecision = onDocumentWritten({
   document: "Companies/{companyId}/TimeEntries/{timesheetId}",
@@ -37,6 +38,7 @@ exports.notifyTimeDecision = onDocumentWritten({
         // Add to pending notifications instead of sending immediately
         await addToPendingNotifications(userId, "timesheet_approval", {
           timesheetId: timesheetId,
+          userId: userId,
           rawdate: afterData.submittedAt || "Unknown date",
           date: formattedDate,
           hours: hours || 0,
@@ -54,6 +56,7 @@ exports.notifyTimeDecision = onDocumentWritten({
         // Add to pending notifications instead of sending immediately
         await addToPendingNotifications(userId, "timesheet_rejection", {
           timesheetId: timesheetId,
+          userId: userId,
           rawdate: afterData.submittedAt || "Unknown date",
           date: formattedDate,
           hours: hours || 0,

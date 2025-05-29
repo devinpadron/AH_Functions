@@ -47,7 +47,7 @@ exports.notifyAssignedWorkers = onDocumentWritten({
           `You have been assigned to a new event: ${afterData.title || "Unnamed Event"}`,
           {
               eventId: eventId,
-              eventName: afterData.title || "Unnamed Event",
+              screenName: "EventDetails",
               companyId: event.params.companyId,
               type: "assignment"
           }
@@ -64,7 +64,7 @@ exports.notifyAssignedWorkers = onDocumentWritten({
           `You have been removed from event: ${afterData.title || "Unnamed Event"}`,
           {
               eventId: eventId,
-              eventName: afterData.title || "Unnamed Event",
+              screenName: "EventDetails",
               companyId: event.params.companyId,
               type: "removal"
           }

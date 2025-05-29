@@ -55,6 +55,8 @@ exports.processNotificationBatches = onSchedule({
               `Your timesheet on ${item.date} (${item.hours} hours) has been approved`,
               {
                 timesheetId: item.timesheetId,
+                userId: userId,
+                screenName: "TimeEntryDetails",
                 type: "timesheet_approval"
               }
             );
@@ -65,7 +67,9 @@ exports.processNotificationBatches = onSchedule({
               `${items.length} of your timesheets have been approved`,
               {
                 count: items.length.toString(),
-                timesheetIds: items.map(item => item.timesheetId).join(','),
+                timesheetIds: items.map(i => i.timesheetId),
+                userId: userId,
+                screenName: "TimeEntryDetails",
                 type: "timesheet_approval_batch"
               }
             );
@@ -80,6 +84,8 @@ exports.processNotificationBatches = onSchedule({
               `Your timesheet on ${item.date} (${item.hours} hours) has been rejected`,
               {
                 timesheetId: item.timesheetId,
+                userId: userId,
+                screenName: "TimeEntryDetails",
                 type: "timesheet_rejection"
               }
             );
@@ -90,7 +96,9 @@ exports.processNotificationBatches = onSchedule({
               `${items.length} of your timesheets have been rejected`,
               {
                 count: items.length.toString(),
-                timesheetIds: items.map(item => item.timesheetId).join(','),
+                timesheetIds: items.map(i => i.timesheetId),
+                userId: userId,
+                screenName: "TimeEntryDetails",
                 type: "timesheet_rejection_batch"
               }
             );

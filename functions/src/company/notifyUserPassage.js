@@ -57,6 +57,7 @@ exports.notifyUserPassage = onDocumentWritten({
             `${userName} has joined ${companyName}`,
             {
               companyId: companyId,
+              screenName: "EmployeeList",
               newUserId: userId,
               type: "new_user_joined"
             }
@@ -114,6 +115,7 @@ exports.notifyUserPassage = onDocumentWritten({
                 `${userName} has left ${companyName}`,
                 {
                 companyId: companyId,
+                screenName: "EmployeeList",
                 leftUserId: userId,
                 type: "user_left"
                 }
