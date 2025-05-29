@@ -99,7 +99,7 @@ exports.processNotificationBatches = onSchedule({
                 timesheetId: items.map(i => i.timesheetId),
                 userId: userId,
                 screenName: "TimeEntryDetails",
-                type: "timesheet_rejection_batch"
+                type: "timesheet_rejection"
               }
             );
           }
