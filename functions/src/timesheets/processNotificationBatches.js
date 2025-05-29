@@ -71,7 +71,6 @@ exports.processNotificationBatches = onSchedule({
             );
           }
         }
-      }
       if (type === "timesheet_rejection") {
         if (items.length === 1) {
             // Single rejection
@@ -97,6 +96,7 @@ exports.processNotificationBatches = onSchedule({
             );
           }
       }
+    }
       
       // Delete the batch after processing
       await doc.ref.delete();
