@@ -71,7 +71,31 @@ exports.processNotificationBatches = onSchedule({
             );
           }
         }
-        // Handle other notification types as needed
+      }
+      if (type === "timesheet_rejection") {
+        if (items.length === 1) {
+            // Single rejection
+            const item = items[0];
+            await sendNotificationToUsers([userId],
+              "Timesheet Rejected",
+              `Your timesheet on ${item.date} (${item.hours} hours) has been rejected`,
+              {
+                timesheetId: item.timesheetId,
+                type: "timesheet_rejection"
+              }
+            );
+          } else {
+            // Multiple approvals
+            await sendNotificationToUsers([userId],
+              "Multiple Timesheets Rejected",
+              `${items.length} of your timesheets have been rejected`,
+              {
+                count: items.length.toString(),
+                timesheetIds: items.map(item => item.timesheetId).join(','),
+                type: "timesheet_rejection_batch"
+              }
+            );
+          }
       }
       
       // Delete the batch after processing

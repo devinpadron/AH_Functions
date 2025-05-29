@@ -13,6 +13,7 @@ const { notifyAssignedWorkers } = require("./src/events/notifyAssignedWorkers");
 const { notifyEventChanged } = require("./src/events/notifyEventChanged");
 const { processNotificationBatches } = require("./src/timesheets/processNotificationBatches");
 const { notifyTimeDecision } = require("./src/timesheets/notifyTimeDecision");
+const { notifyUserPassage } = require("./src/company/notifyUserPassage");
 
 // Export all functions
 module.exports = {
@@ -20,6 +21,7 @@ module.exports = {
     notifyEventChanged,
     processNotificationBatches,
     notifyTimeDecision,
+    notifyUserPassage
 };
 
 

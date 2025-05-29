@@ -33,9 +33,26 @@ exports.notifyTimeDecision = onDocumentWritten({
       if (userId) {
         logger.log(`Adding approval notification to batch for user ${userId}`);
         const formattedDate = moment(afterData.submittedAt).format('MMM D, YYYY'); // "May 16, 2025"
-        const hours = Math.floor((afterData.duration) / 3600); // Convert seconds to hours
+        const hours = ((afterData.duration) / 3600).toFixed(2); // Convert seconds to hours
         // Add to pending notifications instead of sending immediately
         await addToPendingNotifications(userId, "timesheet_approval", {
+          timesheetId: timesheetId,
+          rawdate: afterData.submittedAt || "Unknown date",
+          date: formattedDate,
+          hours: hours || 0,
+        });
+      } else {
+        logger.warn(`No user ID found for timesheet ${timesheetId}, cannot send notification`);
+      }
+    }
+    if (afterData.status === "rejected") {
+      logger.log(`Timesheet ${timesheetId} has been rejected`);
+      if (userId) {
+        logger.log(`Adding rejection notification to batch for user ${userId}`);
+        const formattedDate = moment(afterData.submittedAt).format('MMM D, YYYY'); // "May 16, 2025"
+        const hours = ((afterData.duration) / 3600).toFixed(2); // Convert seconds to hours
+        // Add to pending notifications instead of sending immediately
+        await addToPendingNotifications(userId, "timesheet_rejection", {
           timesheetId: timesheetId,
           rawdate: afterData.submittedAt || "Unknown date",
           date: formattedDate,
