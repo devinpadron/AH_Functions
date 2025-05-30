@@ -56,7 +56,8 @@ exports.processNotificationBatches = onSchedule({
               {
                 timesheetId: item.timesheetId,
                 userId: userId,
-                screenName: "PayrollDetails",
+                companyId: item.companyId,
+                screenName: "TimeEntryDetails",
                 type: "timesheet_approval"
               }
             );
@@ -69,7 +70,8 @@ exports.processNotificationBatches = onSchedule({
                 count: items.length.toString(),
                 timesheetId: items.map(i => i.timesheetId).join(","),
                 userId: userId,
-                screenName: "PayrollDetails",
+                companyId: items[0].companyId,
+                screenName: "TimeEntryDetails",
                 type: "timesheet_approval_batch"
               }
             );
@@ -85,7 +87,8 @@ exports.processNotificationBatches = onSchedule({
               {
                 timesheetId: item.timesheetId,
                 userId: userId,
-                screenName: "PayrollDetails",
+                companyId: item.companyId,
+                screenName: "TimeEntryDetails",
                 type: "timesheet_rejection"
               }
             );
@@ -98,7 +101,8 @@ exports.processNotificationBatches = onSchedule({
                 count: items.length.toString(),
                 timesheetId: items.map(i => i.timesheetId).join(","),
                 userId: userId,
-                screenName: "PayrollDetails",
+                companyId: items[0].companyId,
+                screenName: "TimeEntryDetails",
                 type: "timesheet_rejection_batch"
               }
             );

@@ -28,6 +28,7 @@ exports.notifyTimeDecision = onDocumentWritten({
     }
 
     const userId = afterData.userId;
+    const companyId = event.params.companyId;
 
     if (afterData.status === "approved") {
       logger.log(`Timesheet ${timesheetId} has been approved`);
@@ -39,6 +40,7 @@ exports.notifyTimeDecision = onDocumentWritten({
         await addToPendingNotifications(userId, "timesheet_approval", {
           timesheetId: timesheetId,
           userId: userId,
+          companyId: companyId,
           rawdate: afterData.submittedAt || "Unknown date",
           date: formattedDate,
           hours: hours || 0,
@@ -57,6 +59,7 @@ exports.notifyTimeDecision = onDocumentWritten({
         await addToPendingNotifications(userId, "timesheet_rejection", {
           timesheetId: timesheetId,
           userId: userId,
+          companyId: companyId,
           rawdate: afterData.submittedAt || "Unknown date",
           date: formattedDate,
           hours: hours || 0,
