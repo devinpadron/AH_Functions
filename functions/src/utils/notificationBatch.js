@@ -51,6 +51,60 @@ async function addToPendingNotifications(userId, type, data) {
   }
 }
 
+/**
+ * Adds availability status change notification to batch, grouped by admin and event
+ * Resets timer each time a new status change occurs for the same event
+ */
+async function addToAvailabilityBatch(adminId, eventId, statusType, data) {
+  try {
+    // Create a unique batch key for admin + event combination
+    const batchKey = `${adminId}_${eventId}`;
+    const batchRef = admin.firestore().collection('PendingAvailabilityNotifications').doc(batchKey);
+    
+    // Add this notification to the pending batch using a transaction
+    await admin.firestore().runTransaction(async (transaction) => {
+      const doc = await transaction.get(batchRef);
+      
+      if (!doc.exists) {
+        // First notification for this admin + event combination
+        transaction.set(batchRef, {
+          adminId,
+          eventId,
+          eventTitle: data.eventTitle,
+          companyId: data.companyId,
+          confirmed: statusType === "confirmed" ? [data] : [],
+          declined: statusType === "declined" ? [data] : [],
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+        });
+      } else {
+        // Add to existing batch and reset timer
+        const batchData = doc.data();
+        const confirmed = batchData.confirmed || [];
+        const declined = batchData.declined || [];
+        
+        if (statusType === "confirmed") {
+          confirmed.push(data);
+        } else {
+          declined.push(data);
+        }
+        
+        transaction.update(batchRef, { 
+          confirmed,
+          declined,
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp() // This resets the timer
+        });
+      }
+    });
+    
+    logger.log(`Added availability notification to batch for admin ${adminId}, event ${eventId}`);
+    return true;
+  } catch (error) {
+    logger.error(`Error adding to availability batch for admin ${adminId}:`, error);
+    return false;
+  }
+}
+
 module.exports = {
-  addToPendingNotifications
+  addToPendingNotifications,
+  addToAvailabilityBatch
 };

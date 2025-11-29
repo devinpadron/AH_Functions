@@ -11,6 +11,8 @@ admin.initializeApp();
 // Import and re-export event functions
 const { notifyAssignedWorkers } = require("./src/events/notifyAssignedWorkers");
 const { notifyEventChanged } = require("./src/events/notifyEventChanged");
+const { notifyNewEventWithoutAssignees } = require("./src/availability/notifyNewEventWithoutAssignees");
+const { notifyUserStatusChange } = require("./src/availability/notifyUserStatusChange");
 const { processNotificationBatches } = require("./src/timesheets/processNotificationBatches");
 const { notifyTimeDecision } = require("./src/timesheets/notifyTimeDecision");
 const { notifyUserPassage } = require("./src/company/notifyUserPassage");
@@ -19,6 +21,8 @@ const { notifyUserPassage } = require("./src/company/notifyUserPassage");
 module.exports = {
     notifyAssignedWorkers,
     notifyEventChanged,
+    notifyNewEventWithoutAssignees,
+    notifyUserStatusChange,
     processNotificationBatches,
     notifyTimeDecision,
     notifyUserPassage

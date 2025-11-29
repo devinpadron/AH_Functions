@@ -118,6 +118,148 @@ exports.processNotificationBatches = onSchedule({
     await Promise.all(batchPromises);
     logger.log('All notification batches processed successfully');
     
+    // Process availability notification batches
+    const availabilityBatchSnapshot = await admin.firestore()
+      .collection('PendingAvailabilityNotifications')
+      .where('lastUpdated', '<', cutoffTime)
+      .get();
+    
+    if (!availabilityBatchSnapshot.empty) {
+      logger.log(`Processing ${availabilityBatchSnapshot.size} availability notification batches`);
+      
+      const availabilityPromises = availabilityBatchSnapshot.docs.map(async (doc) => {
+        const batchData = doc.data();
+        const adminId = batchData.adminId;
+        const eventId = batchData.eventId;
+        const eventTitle = batchData.eventTitle;
+        const companyId = batchData.companyId;
+        const confirmed = batchData.confirmed || [];
+        const declined = batchData.declined || [];
+        
+        // Build notification based on what we have
+        let title = "";
+        let body = "";
+        let type = "";
+        
+        const totalCount = confirmed.length + declined.length;
+        
+        if (confirmed.length > 0 && declined.length === 0) {
+          // Only confirmations
+          if (confirmed.length === 1) {
+            title = "User Confirmed Availability";
+            body = `${confirmed[0].userName} has confirmed their availability for "${eventTitle}"`;
+            type = "availability_confirmed";
+          } else {
+            title = "Multiple Users Confirmed";
+            body = `${confirmed.length} users have confirmed their availability for "${eventTitle}"`;
+            type = "availability_confirmed_batch";
+          }
+        } else if (declined.length > 0 && confirmed.length === 0) {
+          // Only declines
+          if (declined.length === 1) {
+            title = "User Declined Availability";
+            body = `${declined[0].userName} has declined availability for "${eventTitle}"`;
+            type = "availability_declined";
+          } else {
+            title = "Multiple Users Declined";
+            body = `${declined.length} users have declined their availability for "${eventTitle}"`;
+            type = "availability_declined_batch";
+          }
+        } else {
+          // Mixed confirmations and declines
+          title = "Availability Updates";
+          body = `${confirmed.length} confirmed and ${declined.length} declined availability for "${eventTitle}"`;
+          type = "availability_mixed_batch";
+        }
+        
+        // Send the notification
+        await sendNotificationToUsers(
+          [adminId],
+          title,
+          body,
+          {
+            eventId: eventId,
+            companyId: companyId,
+            screenName: "Details",
+            confirmedCount: confirmed.length.toString(),
+            declinedCount: declined.length.toString(),
+            type: type
+          }
+        );
+        
+        // Delete the batch after processing
+        await doc.ref.delete();
+        logger.log(`Processed availability batch for admin ${adminId}, event ${eventId}`);
+      });
+      
+      await Promise.all(availabilityPromises);
+      logger.log('All availability notification batches processed successfully');
+    }
+    
+    // Process new event notification batches
+    const newEventBatchSnapshot = await admin.firestore()
+      .collection('PendingNewEventNotifications')
+      .where('lastUpdated', '<', cutoffTime)
+      .get();
+    
+    if (!newEventBatchSnapshot.empty) {
+      logger.log(`Processing ${newEventBatchSnapshot.size} new event notification batches`);
+      
+      const newEventPromises = newEventBatchSnapshot.docs.map(async (doc) => {
+        const batchData = doc.data();
+        const companyId = batchData.companyId;
+        const userIds = batchData.userIds || [];
+        const events = batchData.events || [];
+        
+        if (events.length === 0 || userIds.length === 0) {
+          await doc.ref.delete();
+          return;
+        }
+        
+        // Get company name
+        const companyDoc = await admin.firestore().collection('Companies').doc(companyId).get();
+        const companyName = companyDoc.exists ? (companyDoc.data().name || "your company") : "your company";
+        
+        // Build notification based on number of events
+        let title = "";
+        let body = "";
+        let type = "";
+        
+        if (events.length === 1) {
+          // Single event
+          const event = events[0];
+          title = "New Event Available";
+          body = `A new event "${event.eventTitle}" is available for ${companyName}. Please confirm your availability for ${event.eventDate}.`;
+          type = "new_event_unassigned";
+        } else {
+          // Multiple events
+          title = "New Events Available";
+          body = `${events.length} new events are available for ${companyName}. Please confirm your availability.`;
+          type = "new_events_batch";
+        }
+        
+        // Send the notification to all users
+        await sendNotificationToUsers(
+          userIds,
+          title,
+          body,
+          {
+            companyId: companyId,
+            screenName: "EventList",
+            eventCount: events.length.toString(),
+            type: type
+          }
+        );
+        
+        // Delete the batch after processing
+        await doc.ref.delete();
+        logger.log(`Processed new event batch for company ${companyId}, sent to ${userIds.length} users about ${events.length} events`);
+      });
+      
+      await Promise.all(newEventPromises);
+      logger.log('All new event notification batches processed successfully');
+    }
+    
     return null;
   } catch (error) {
     logger.error('Error processing notification batches:', error);
