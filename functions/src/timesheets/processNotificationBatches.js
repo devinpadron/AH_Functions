@@ -16,13 +16,10 @@ exports.processNotificationBatches = onSchedule({
       .collection('PendingNotifications')
       .where('lastUpdated', '<', cutoffTime)
       .get();
-    
-    if (batchSnapshot.empty) {
-      logger.log('No notification batches to process');
-      return null;
+
+    if (!batchSnapshot.empty) {
+      logger.log(`Processing ${batchSnapshot.size} user notification batches`);
     }
-    
-    logger.log(`Processing ${batchSnapshot.size} notification batches`);
     
     const batchPromises = batchSnapshot.docs.map(async (doc) => {
       const batchData = doc.data();
@@ -115,15 +112,19 @@ exports.processNotificationBatches = onSchedule({
       logger.log(`Processed and sent notifications for user ${userId}`);
     });
     
-    await Promise.all(batchPromises);
-    logger.log('All notification batches processed successfully');
+    if (!batchSnapshot.empty) {
+      await Promise.all(batchPromises);
+      logger.log('User notification batches processed successfully');
+    } else {
+      logger.log('No user notification batches ready');
+    }
     
     // Process availability notification batches
     const availabilityBatchSnapshot = await admin.firestore()
       .collection('PendingAvailabilityNotifications')
       .where('lastUpdated', '<', cutoffTime)
       .get();
-    
+
     if (!availabilityBatchSnapshot.empty) {
       logger.log(`Processing ${availabilityBatchSnapshot.size} availability notification batches`);
       
@@ -193,7 +194,10 @@ exports.processNotificationBatches = onSchedule({
       });
       
       await Promise.all(availabilityPromises);
-      logger.log('All availability notification batches processed successfully');
+      logger.log('Availability notification batches processed successfully');
+    }
+    else {
+      logger.log('No availability notification batches ready');
     }
     
     // Process new event notification batches
@@ -201,7 +205,7 @@ exports.processNotificationBatches = onSchedule({
       .collection('PendingNewEventNotifications')
       .where('lastUpdated', '<', cutoffTime)
       .get();
-    
+
     if (!newEventBatchSnapshot.empty) {
       logger.log(`Processing ${newEventBatchSnapshot.size} new event notification batches`);
       
@@ -257,7 +261,10 @@ exports.processNotificationBatches = onSchedule({
       });
       
       await Promise.all(newEventPromises);
-      logger.log('All new event notification batches processed successfully');
+      logger.log('New event notification batches processed successfully');
+    }
+    else {
+      logger.log('No new event notification batches ready');
     }
     
     return null;
