@@ -52,51 +52,65 @@ async function addToPendingNotifications(userId, type, data) {
 }
 
 /**
- * Adds availability status change notification to batch, grouped by admin and event
- * Resets timer each time a new status change occurs for the same event
+ * Adds availability status change notification to batch, grouped by admin only
+ * Resets timer each time a new status change occurs
+ * Groups all events together to prevent spam when one user confirms/declines multiple events
  */
 async function addToAvailabilityBatch(adminId, eventId, statusType, data) {
   try {
-    // Create a unique batch key for admin + event combination
-    const batchKey = `${adminId}_${eventId}`;
-    const batchRef = admin.firestore().collection('PendingAvailabilityNotifications').doc(batchKey);
+    // Create a batch key for just the admin (not per event)
+    const batchRef = admin.firestore().collection('PendingAvailabilityNotifications').doc(adminId);
     
     // Add this notification to the pending batch using a transaction
     await admin.firestore().runTransaction(async (transaction) => {
       const doc = await transaction.get(batchRef);
       
       if (!doc.exists) {
-        // First notification for this admin + event combination
+        // First notification for this admin
         transaction.set(batchRef, {
           adminId,
-          eventId,
-          eventTitle: data.eventTitle,
           companyId: data.companyId,
-          confirmed: statusType === "confirmed" ? [data] : [],
-          declined: statusType === "declined" ? [data] : [],
+          events: [{
+            eventId,
+            eventTitle: data.eventTitle,
+            confirmed: statusType === "confirmed" ? [data] : [],
+            declined: statusType === "declined" ? [data] : []
+          }],
           lastUpdated: admin.firestore.FieldValue.serverTimestamp()
         });
       } else {
         // Add to existing batch and reset timer
         const batchData = doc.data();
-        const confirmed = batchData.confirmed || [];
-        const declined = batchData.declined || [];
+        const events = batchData.events || [];
         
-        if (statusType === "confirmed") {
-          confirmed.push(data);
+        // Find if this event already exists in the batch
+        const eventIndex = events.findIndex(e => e.eventId === eventId);
+        
+        if (eventIndex >= 0) {
+          // Event exists, add to its confirmed/declined arrays
+          if (statusType === "confirmed") {
+            events[eventIndex].confirmed.push(data);
+          } else {
+            events[eventIndex].declined.push(data);
+          }
         } else {
-          declined.push(data);
+          // New event, add it to the batch
+          events.push({
+            eventId,
+            eventTitle: data.eventTitle,
+            confirmed: statusType === "confirmed" ? [data] : [],
+            declined: statusType === "declined" ? [data] : []
+          });
         }
         
         transaction.update(batchRef, { 
-          confirmed,
-          declined,
+          events,
           lastUpdated: admin.firestore.FieldValue.serverTimestamp() // This resets the timer
         });
       }
     });
     
-    logger.log(`Added availability notification to batch for admin ${adminId}, event ${eventId}`);
+    logger.log(`Added availability notification to batch for admin ${adminId}`);
     return true;
   } catch (error) {
     logger.error(`Error adding to availability batch for admin ${adminId}:`, error);

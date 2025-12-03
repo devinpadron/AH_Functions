@@ -131,46 +131,77 @@ exports.processNotificationBatches = onSchedule({
       const availabilityPromises = availabilityBatchSnapshot.docs.map(async (doc) => {
         const batchData = doc.data();
         const adminId = batchData.adminId;
-        const eventId = batchData.eventId;
-        const eventTitle = batchData.eventTitle;
         const companyId = batchData.companyId;
-        const confirmed = batchData.confirmed || [];
-        const declined = batchData.declined || [];
+        const events = batchData.events || [];
+        
+        if (events.length === 0) {
+          await doc.ref.delete();
+          return;
+        }
+        
+        // Count total confirmations and declines across all events
+        let totalConfirmed = 0;
+        let totalDeclined = 0;
+        let allUsers = new Set();
+        
+        events.forEach(event => {
+          totalConfirmed += (event.confirmed || []).length;
+          totalDeclined += (event.declined || []).length;
+          (event.confirmed || []).forEach(u => allUsers.add(u.userName));
+          (event.declined || []).forEach(u => allUsers.add(u.userName));
+        });
         
         // Build notification based on what we have
         let title = "";
         let body = "";
         let type = "";
         
-        const totalCount = confirmed.length + declined.length;
-        
-        if (confirmed.length > 0 && declined.length === 0) {
-          // Only confirmations
-          if (confirmed.length === 1) {
-            title = "User Confirmed Availability";
-            body = `${confirmed[0].userName} has confirmed their availability for "${eventTitle}"`;
-            type = "availability_confirmed";
+        if (events.length === 1) {
+          // Single event
+          const event = events[0];
+          const confirmed = event.confirmed || [];
+          const declined = event.declined || [];
+          
+          if (confirmed.length > 0 && declined.length === 0) {
+            if (confirmed.length === 1) {
+              title = "User Confirmed Availability";
+              body = `${confirmed[0].userName} has confirmed their availability for "${event.eventTitle}"`;
+              type = "availability_confirmed";
+            } else {
+              title = "Multiple Users Confirmed";
+              body = `${confirmed.length} users have confirmed their availability for "${event.eventTitle}"`;
+              type = "availability_confirmed_batch";
+            }
+          } else if (declined.length > 0 && confirmed.length === 0) {
+            if (declined.length === 1) {
+              title = "User Declined Availability";
+              body = `${declined[0].userName} has declined availability for "${event.eventTitle}"`;
+              type = "availability_declined";
+            } else {
+              title = "Multiple Users Declined";
+              body = `${declined.length} users have declined their availability for "${event.eventTitle}"`;
+              type = "availability_declined_batch";
+            }
           } else {
-            title = "Multiple Users Confirmed";
-            body = `${confirmed.length} users have confirmed their availability for "${eventTitle}"`;
-            type = "availability_confirmed_batch";
-          }
-        } else if (declined.length > 0 && confirmed.length === 0) {
-          // Only declines
-          if (declined.length === 1) {
-            title = "User Declined Availability";
-            body = `${declined[0].userName} has declined availability for "${eventTitle}"`;
-            type = "availability_declined";
-          } else {
-            title = "Multiple Users Declined";
-            body = `${declined.length} users have declined their availability for "${eventTitle}"`;
-            type = "availability_declined_batch";
+            title = "Availability Updates";
+            body = `${confirmed.length} confirmed and ${declined.length} declined availability for "${event.eventTitle}"`;
+            type = "availability_mixed_batch";
           }
         } else {
-          // Mixed confirmations and declines
-          title = "Availability Updates";
-          body = `${confirmed.length} confirmed and ${declined.length} declined availability for "${eventTitle}"`;
-          type = "availability_mixed_batch";
+          // Multiple events
+          if (totalConfirmed > 0 && totalDeclined === 0) {
+            title = "Users Confirmed Availability";
+            body = `${totalConfirmed} confirmation${totalConfirmed > 1 ? 's' : ''} across ${events.length} events`;
+            type = "availability_confirmed_multi_event";
+          } else if (totalDeclined > 0 && totalConfirmed === 0) {
+            title = "Users Declined Availability";
+            body = `${totalDeclined} decline${totalDeclined > 1 ? 's' : ''} across ${events.length} events`;
+            type = "availability_declined_multi_event";
+          } else {
+            title = "Availability Updates";
+            body = `${totalConfirmed} confirmed and ${totalDeclined} declined across ${events.length} events`;
+            type = "availability_mixed_multi_event";
+          }
         }
         
         // Send the notification
@@ -179,18 +210,18 @@ exports.processNotificationBatches = onSchedule({
           title,
           body,
           {
-            eventId: eventId,
             companyId: companyId,
-            screenName: "Details",
-            confirmedCount: confirmed.length.toString(),
-            declinedCount: declined.length.toString(),
+            screenName: "EventList",
+            eventCount: events.length.toString(),
+            confirmedCount: totalConfirmed.toString(),
+            declinedCount: totalDeclined.toString(),
             type: type
           }
         );
         
         // Delete the batch after processing
         await doc.ref.delete();
-        logger.log(`Processed availability batch for admin ${adminId}, event ${eventId}`);
+        logger.log(`Processed availability batch for admin ${adminId}: ${events.length} events, ${totalConfirmed} confirmed, ${totalDeclined} declined`);
       });
       
       await Promise.all(availabilityPromises);
