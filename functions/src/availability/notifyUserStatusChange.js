@@ -2,7 +2,7 @@ const {onDocumentWritten} = require("firebase-functions/v2/firestore");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
 const {addToAvailabilityBatch} = require("../utils/notificationBatch");
-const {getCompanyMemberIds} = require("../utils/notifications");
+const {sendNotificationToUsers, getCompanyMemberIds} = require("../utils/notifications");
 const {C} = require("../utils/paths");
 
 /*
@@ -29,6 +29,37 @@ exports.notifyUserStatusChange = onDocumentWritten({
     const beforeData = event.data.before && event.data.before.data() ? event.data.before.data() : {};
     const afterData = event.data.after && event.data.after.data() ? event.data.after.data() : {};
 
+    // eventId / userId / companyId are all fields on the response document.
+    const eventId = afterData.eventId;
+    const userId = afterData.userId;
+    const companyId = afterData.companyId;
+
+    if (!eventId || !userId || !companyId) {
+      logger.warn(`Response ${event.params.responseId} missing eventId/userId/companyId, skipping`);
+      return null;
+    }
+
+    /*
+     * A PROBLEM FLAG, which is a different event from an availability answer
+     * and is handled first because it is the urgent one.
+     *
+     * An assigned worker saying they cannot make a shift leaves the job
+     * potentially short, and flagging deliberately does NOT unassign them — a
+     * mis-tap must never silently unstaff an event — so nothing else about the
+     * event changes and nobody would find out unless told. This used to write
+     * the field and reach no one.
+     *
+     * Sent immediately rather than through the availability batch. Batching
+     * exists to stop a flurry of routine confirmations becoming a flurry of
+     * pushes; a crew member dropping out of tomorrow's job is not routine, and
+     * a manager finding out five minutes late may be five minutes they needed.
+     */
+    const flaggedNow = !beforeData.problemFlaggedAt && afterData.problemFlaggedAt;
+    if (flaggedNow) {
+      await notifyProblemFlagged(companyId, eventId, userId, afterData.problemNote);
+      return null;
+    }
+
     const beforeStatus = beforeData.status;
     const afterStatus = afterData.status;
 
@@ -40,16 +71,6 @@ exports.notifyUserStatusChange = onDocumentWritten({
     }
     if (afterStatus !== "confirmed" && afterStatus !== "declined") {
       logger.log("No availability status changes detected");
-      return null;
-    }
-
-    // eventId / userId / companyId are all fields on the response document.
-    const eventId = afterData.eventId;
-    const userId = afterData.userId;
-    const companyId = afterData.companyId;
-
-    if (!eventId || !userId || !companyId) {
-      logger.warn(`Response ${event.params.responseId} missing eventId/userId/companyId, skipping`);
       return null;
     }
 
@@ -132,3 +153,71 @@ exports.notifyUserStatusChange = onDocumentWritten({
     return null;
   }
 });
+
+/**
+ * Tells the managers that a crew member cannot make a shift.
+ *
+ * Straight to sendNotificationToUsers rather than the availability batch: this
+ * is the one thing on this trigger that leaves a job potentially short-staffed,
+ * and it should not wait behind a five-minute drain.
+ */
+async function notifyProblemFlagged(companyId, eventId, userId, note) {
+  const adminIds = await getCompanyMemberIds(companyId, ["manager", "owner"]);
+  if (adminIds.length === 0) {
+    logger.warn(`No admins/owners found in company ${companyId}`);
+    return;
+  }
+
+  const [eventTitle, userName] = await Promise.all([
+    lookupEventTitle(eventId),
+    lookupUserName(userId),
+  ]);
+
+  const trimmed = (note || "").trim();
+
+  await sendNotificationToUsers(
+    adminIds,
+    "Someone can't make a shift",
+    trimmed
+      ? `${userName} flagged a problem with ${eventTitle}: "${trimmed}"`
+      : `${userName} flagged a problem with ${eventTitle}. They are still on the crew.`,
+    {
+      companyId: companyId,
+      eventId: eventId,
+      userId: userId,
+      screenName: "Details",
+      type: "assignment_problem",
+    }
+  );
+
+  logger.log(`Problem flag on event ${eventId} sent to ${adminIds.length} admins`);
+}
+
+/** An event's title, or a readable stand-in. Never throws — a failed lookup
+ *  must not swallow the notification it was only decorating. */
+async function lookupEventTitle(eventId) {
+  try {
+    const doc = await admin.firestore().collection(C.events).doc(eventId).get();
+    return (doc.exists && doc.data().title) || "an event";
+  } catch (error) {
+    logger.error(`Error fetching event ${eventId}:`, error);
+    return "an event";
+  }
+}
+
+/** A worker's display name, falling back to their email then to a generic. */
+async function lookupUserName(userId) {
+  try {
+    const doc = await admin.firestore().collection(C.users).doc(userId).get();
+    if (!doc.exists) return "A worker";
+    const data = doc.data();
+    return (
+      `${data.firstName || ""} ${data.lastName || ""}`.trim() ||
+      data.email ||
+      "A worker"
+    );
+  } catch (error) {
+    logger.error(`Error fetching user ${userId}:`, error);
+    return "A worker";
+  }
+}
