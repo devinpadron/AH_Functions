@@ -79,7 +79,7 @@ exports.notifyAssignedWorkers = onDocumentWritten({
 
     return null;
   } catch (error) {
-    logger.error("Error in notifyAssignedWorkersV2 function:", error);
+    logger.error("Error in notifyAssignedWorkers function:", error);
     return null;
   }
 });

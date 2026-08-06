@@ -139,7 +139,7 @@ exports.notifyNewEventWithoutAssignees = onDocumentCreated({
 
     return null;
   } catch (error) {
-    logger.error("Error in notifyNewEventWithoutAssigneesV2 function:", error);
+    logger.error("Error in notifyNewEventWithoutAssignees function:", error);
     return null;
   }
 });

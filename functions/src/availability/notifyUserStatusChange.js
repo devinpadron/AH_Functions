@@ -128,7 +128,7 @@ exports.notifyUserStatusChange = onDocumentWritten({
 
     return null;
   } catch (error) {
-    logger.error("Error in notifyUserStatusChangeV2 function:", error);
+    logger.error("Error in notifyUserStatusChange function:", error);
     return null;
   }
 });

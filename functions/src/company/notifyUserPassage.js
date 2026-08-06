@@ -107,7 +107,7 @@ exports.notifyUserPassage = onDocumentWritten({
 
     return null;
   } catch (error) {
-    logger.error("Error in notifyUserPassageV2 function:", error);
+    logger.error("Error in notifyUserPassage function:", error);
     return null;
   }
 });
