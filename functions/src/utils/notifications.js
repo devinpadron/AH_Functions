@@ -16,6 +16,9 @@ const CHANNEL_BY_TYPE = {
   update: "events",
 
   availability_nudge: "availability",
+  // A shift you already have, not an invitation — so it answers to the same
+  // switch as the rest of "my shifts".
+  assignment_ack_nudge: "events",
   new_event_unassigned: "availability",
   new_events_batch: "availability",
 

@@ -5,11 +5,29 @@ const {sendNotificationToUsers, getCompanyMemberIds} = require("../utils/notific
 const {C} = require("../utils/paths");
 
 /*
- * Nudges workers who still have "pending" on upcoming events.
+ * Nudges workers who owe an answer on an upcoming event.
  *
- * ONE notification per worker, covering every event they owe an answer on —
- * not one per event. A worker invited to six shifts in a week would otherwise
- * get six identical buzzes, learn to ignore them, and answer none.
+ * TWO DIFFERENT QUESTIONS, and which one someone is asked depends entirely on
+ * whether they are on the crew yet:
+ *
+ *   NOT assigned, response still "pending"
+ *       -> "can you work this?"  Confirm or decline. These are the events the
+ *          availability screen lists, and answering is how a worker volunteers.
+ *
+ *   ASSIGNED, but has not acknowledged
+ *       -> "you ARE working this — confirm you have seen it." Declining is not
+ *          the answer here; the shift is already theirs. If the company allows
+ *          it they can flag a problem from the event screen, which raises
+ *          something for a manager rather than silently unstaffing the job.
+ *
+ * This function used to ask everyone the first question, so a worker already
+ * scheduled on a shift was invited to decline availability for it — a reply
+ * that no longer means anything once the crew is set.
+ *
+ * ONE notification per question per worker, covering every event of that kind.
+ * A worker invited to six shifts gets one buzz, not six; someone with both
+ * kinds outstanding gets two, because they are two different actions and
+ * cannot be answered together.
  *
  * The company sets the cadence: `availabilityReminder.hours/minutes` is how
  * long to wait before nudging the same worker again. This function runs hourly
@@ -17,6 +35,13 @@ const {C} = require("../utils/paths");
  * the schedule below is the RESOLUTION, not the frequency — a company asking
  * for every 6 hours gets every 6 hours, not every hour.
  */
+
+/** The two questions, each with its own clock so neither suppresses the other. */
+const AVAILABILITY = "availability";
+const ACKNOWLEDGEMENT = "acknowledgement";
+
+/** Most response documents one run will look at. */
+const SCAN_LIMIT = 5000;
 
 exports.nudgePendingResponses = onSchedule({
   schedule: "every 60 minutes",
@@ -33,31 +58,82 @@ exports.nudgePendingResponses = onSchedule({
      */
     const floor = dayKeyUTC(-1);
 
-    const pending = await admin.firestore()
+    /*
+     * Every upcoming response, not just the pending ones.
+     *
+     * An assigned worker who confirmed their availability weeks ago has
+     * `status: "confirmed"` and `acknowledgedAt: null` — they still owe the
+     * second answer, and a status filter would never see them. dateKey alone
+     * is a single-field index, which Firestore maintains automatically.
+     */
+    const responses = await admin.firestore()
       .collection(C.eventResponses)
-      .where("status", "==", "pending")
       .where("dateKey", ">=", floor)
-      .limit(5000)
+      .limit(SCAN_LIMIT)
       .get();
 
-    if (pending.empty) {
-      logger.log("No pending responses on upcoming events");
+    if (responses.empty) {
+      logger.log("No responses on upcoming events");
       return;
     }
 
-    // companyId -> userId -> [dateKey]
+    /*
+     * Ordered by dateKey ascending, so hitting the cap drops the FURTHEST out
+     * events — the ones least urgent to chase. Said out loud rather than left
+     * to be inferred from a nudge that quietly stopped arriving.
+     */
+    if (responses.size === SCAN_LIMIT) {
+      logger.warn(
+        `Scan hit the ${SCAN_LIMIT} cap; events beyond the earliest ${SCAN_LIMIT} responses were not considered`
+      );
+    }
+
+    // Assignment lives on the EVENT, so the events these responses point at
+    // have to be read before anyone can be classified.
+    const events = await loadEvents(
+      [...new Set(responses.docs.map((doc) => doc.data().eventId).filter(Boolean))]
+    );
+
+    // companyId -> userId -> { availability: [{dateKey, eventId}], acknowledgement: [...] }
     const byCompany = new Map();
-    for (const doc of pending.docs) {
-      const {companyId, userId, dateKey} = doc.data();
-      if (!companyId || !userId || !dateKey) continue;
+    let owed = 0;
+
+    for (const doc of responses.docs) {
+      const data = doc.data();
+      const {companyId, userId, dateKey, eventId} = data;
+      if (!companyId || !userId || !dateKey || !eventId) continue;
+
+      const event = events.get(eventId);
+      if (!event) continue;   // deleted out from under the response
+
+      const assigned = (event.assignedUserIds || []).includes(userId);
+
+      let question = null;
+      if (assigned) {
+        /*
+         * A flagged problem counts as answered. They have told the company
+         * they cannot make it and it is a manager's move now — chasing them
+         * for an acknowledgement would be asking them to agree with a shift
+         * they have already objected to.
+         */
+        if (!data.acknowledgedAt && !data.problemFlaggedAt) {
+          question = ACKNOWLEDGEMENT;
+        }
+      } else if (data.status === "pending") {
+        question = AVAILABILITY;
+      }
+      if (!question) continue;
 
       if (!byCompany.has(companyId)) byCompany.set(companyId, new Map());
       const byUser = byCompany.get(companyId);
-      if (!byUser.has(userId)) byUser.set(userId, []);
-      byUser.get(userId).push(dateKey);
+      if (!byUser.has(userId)) {
+        byUser.set(userId, {[AVAILABILITY]: [], [ACKNOWLEDGEMENT]: []});
+      }
+      byUser.get(userId)[question].push({dateKey, eventId});
+      owed += 1;
     }
 
-    logger.log(`${pending.size} pending responses across ${byCompany.size} companies`);
+    logger.log(`${owed} unanswered of ${responses.size} upcoming, across ${byCompany.size} companies`);
 
     for (const [companyId, byUser] of byCompany) {
       try {
@@ -119,59 +195,111 @@ async function nudgeCompany(companyId, byUser) {
   const now = Date.now();
   let nudged = 0;
 
-  for (const [userId, dateKeys] of byUser) {
+  for (const [userId, questions] of byUser) {
     if (!activeIds.has(userId)) continue;
 
-    const upcoming = dateKeys.filter((key) => key >= today);
-    if (upcoming.length === 0) continue;
-
+    /*
+     * One clock per question, on one document.
+     *
+     * A shared clock would let whichever nudge fired first suppress the other
+     * for a whole interval — so a worker chased about availability would never
+     * be asked to confirm the shift they were then given.
+     */
     const stateRef = db.collection(C.availabilityNudges).doc(`${companyId}_${userId}`);
     const state = await stateRef.get();
-    const lastNudgedAt = state.exists && state.data().lastNudgedAt
-      ? state.data().lastNudgedAt.toMillis()
-      : 0;
+    const stamps = state.exists ? state.data() : {};
 
-    if (now - lastNudgedAt < intervalMs) continue;
+    for (const question of [ACKNOWLEDGEMENT, AVAILABILITY]) {
+      const upcoming = questions[question]
+        .filter((item) => item.dateKey >= today)
+        .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+      if (upcoming.length === 0) continue;
 
-    upcoming.sort();
-    const count = upcoming.length;
+      const field = `lastNudgedAt_${question}`;
+      const last = stamps[field] ? stamps[field].toMillis() : 0;
+      if (now - last < intervalMs) continue;
 
-    /*
-     * The clock is stamped BEFORE the send, deliberately.
-     *
-     * If the write lands and the send fails, this worker stays quiet until the
-     * next interval. If the send landed first and the write failed, they would
-     * be nudged again in an hour, and again the hour after that. Silence for
-     * one interval is a smaller failure than a notification loop — the whole
-     * point of this function is to not be annoying.
-     */
-    await stateRef.set({
-      companyId,
-      userId,
-      pendingCount: count,
-      lastNudgedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, {merge: true});
+      const count = upcoming.length;
+      const soonest = upcoming[0];
+      const when = humanDate(soonest.dateKey);
 
-    await sendNotificationToUsers([userId],
-      "Availability needed",
-      count === 1
-        ? `You have 1 event awaiting your reply, on ${humanDate(upcoming[0])}.`
-        : `You have ${count} events awaiting your reply, starting ${humanDate(upcoming[0])}.`,
-      {
+      /*
+       * The clock is stamped BEFORE the send, deliberately.
+       *
+       * If the write lands and the send fails, this worker stays quiet until
+       * the next interval. If the send landed first and the write failed, they
+       * would be nudged again in an hour, and again the hour after that.
+       * Silence for one interval is a smaller failure than a notification
+       * loop — the whole point of this function is to not be annoying.
+       */
+      await stateRef.set({
+        companyId,
+        userId,
+        [field]: admin.firestore.FieldValue.serverTimestamp(),
+        [`pendingCount_${question}`]: count,
+      }, {merge: true});
+
+      const message = question === ACKNOWLEDGEMENT
+        ? {
+            title: "Confirm your shifts",
+            body: count === 1
+              ? `You are scheduled on ${when}. Confirm you have seen it.`
+              : `You are scheduled on ${count} shifts, starting ${when}. Confirm you have seen them.`,
+            type: "assignment_ack_nudge",
+            screenName: "Details",
+          }
+        : {
+            title: "Availability needed",
+            body: count === 1
+              ? `You have 1 event awaiting your reply, on ${when}.`
+              : `You have ${count} events awaiting your reply, starting ${when}.`,
+            type: "availability_nudge",
+            screenName: "Availability",
+          };
+
+      await sendNotificationToUsers([userId], message.title, message.body, {
         companyId: companyId,
-        screenName: "Availability",
-        type: "availability_nudge",
+        screenName: message.screenName,
+        type: message.type,
         pendingCount: String(count),
-        soonestDateKey: upcoming[0],
-      }
-    );
+        soonestDateKey: soonest.dateKey,
+        /*
+         * The soonest shift, so an acknowledgement push opens the event with
+         * the confirm button on it. There is no screen listing several
+         * unconfirmed shifts — the Calendar tab badge covers the rest — so
+         * landing on the next one is the most useful single destination.
+         */
+        eventId: soonest.eventId,
+      });
 
-    nudged++;
+      nudged++;
+    }
   }
 
   if (nudged > 0) {
-    logger.log(`Nudged ${nudged} workers in company ${companyId}`);
+    logger.log(`Sent ${nudged} nudges in company ${companyId}`);
   }
+}
+
+/**
+ * The events these responses belong to, keyed by id.
+ *
+ * Chunked at 100: one getAll of every upcoming event in every company is a
+ * single slow round trip the whole run waits on.
+ */
+async function loadEvents(eventIds) {
+  const db = admin.firestore();
+  const byId = new Map();
+
+  for (let i = 0; i < eventIds.length; i += 100) {
+    const refs = eventIds.slice(i, i + 100).map((id) => db.collection(C.events).doc(id));
+    const docs = await db.getAll(...refs);
+    for (const doc of docs) {
+      if (doc.exists) byId.set(doc.id, doc.data());
+    }
+  }
+
+  return byId;
 }
 
 /** "YYYY-MM-DD" for today in UTC, offset by whole days. */
