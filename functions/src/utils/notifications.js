@@ -2,6 +2,85 @@ const admin = require("firebase-admin");
 const logger = require("firebase-functions/logger");
 const {C} = require("./paths");
 
+/*
+ * Which preference switch each notification type answers to.
+ *
+ * Mirrors NOTIFICATION_ROWS in the app's UserPreferences screen. A type missing
+ * from this map is UNFILTERED and always sends — an unexpected buzz is a much
+ * smaller failure than a typo here silently muting a whole category with
+ * nothing on screen to explain it.
+ */
+const CHANNEL_BY_TYPE = {
+  assignment: "events",
+  removal: "events",
+  update: "events",
+
+  availability_nudge: "availability",
+  new_event_unassigned: "availability",
+  new_events_batch: "availability",
+
+  timesheet_approval: "timesheets",
+  timesheet_approval_batch: "timesheets",
+  timesheet_rejection: "timesheets",
+  timesheet_rejection_batch: "timesheets",
+
+  new_user_joined: "team",
+  user_left: "team",
+  availability_confirmed: "team",
+  availability_confirmed_batch: "team",
+  availability_confirmed_multi_event: "team",
+  availability_declined: "team",
+  availability_declined_batch: "team",
+  availability_declined_multi_event: "team",
+  availability_mixed_batch: "team",
+  availability_mixed_multi_event: "team",
+};
+
+/**
+ * Drops the users who have muted this kind of notification.
+ *
+ * Filtering HERE rather than at each call site is the point: this is the one
+ * function every push in the repo passes through, including the batched ones
+ * the scheduler drains hours after they were queued. A per-caller check would
+ * have to be remembered seven times and would be missed the eighth.
+ *
+ * FAILS OPEN throughout. A missing `notifications` object, a missing membership,
+ * or a failed read all mean "send it" — the field is absent on every membership
+ * written before this existed, so defaulting to silence would mute the entire
+ * user base the moment this deployed.
+ */
+async function filterByPreference(userIds, companyId, type) {
+  const channel = CHANNEL_BY_TYPE[type];
+  if (!channel || !companyId || userIds.length === 0) return userIds;
+
+  try {
+    const db = admin.firestore();
+
+    /*
+     * Chunked: a "new events" push goes to every worker in the company, and
+     * subscribeMembers caps that at 500. One getAll of 500 refs is a single
+     * slow round trip that the whole send waits on.
+     */
+    const docs = [];
+    for (let i = 0; i < userIds.length; i += 100) {
+      const refs = userIds.slice(i, i + 100).map((userId) =>
+        db.collection(C.memberships).doc(`${companyId}_${userId}`)
+      );
+      docs.push(...(await db.getAll(...refs)));
+    }
+
+    return userIds.filter((userId, index) => {
+      const prefs = docs[index].exists ? docs[index].data().notifications : null;
+      if (!prefs) return true;
+      if (prefs.enabled === false) return false;
+      return prefs[channel] !== false;
+    });
+  } catch (error) {
+    logger.error(`Error reading notification preferences for ${companyId}:`, error);
+    return userIds;
+  }
+}
+
 /**
  * v2 notification helper.
  *
@@ -20,8 +99,17 @@ const {C} = require("./paths");
  */
 async function sendNotificationToUsers(userIds, title, body, data = {}) {
   try {
+    const allowed = await filterByPreference(userIds, data.companyId, data.type);
+
+    if (allowed.length < userIds.length) {
+      logger.log(
+        `${userIds.length - allowed.length}/${userIds.length} recipients muted "${data.type}"`
+      );
+    }
+    if (allowed.length === 0) return;
+
     // Process each user in parallel
-    const promises = userIds.map(async (userId) => {
+    const promises = allowed.map(async (userId) => {
       try {
         // Get the user's FCM tokens from their user document
         const userDoc = await admin.firestore().collection(C.users).doc(userId).get();
@@ -127,5 +215,7 @@ async function getCompanyMemberIds(companyId, roles = null) {
 
 module.exports = {
   sendNotificationToUsers,
-  getCompanyMemberIds
+  getCompanyMemberIds,
+  // Exported for the type-coverage check in tools/, not for callers.
+  CHANNEL_BY_TYPE
 };
