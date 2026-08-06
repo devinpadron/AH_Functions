@@ -4,6 +4,7 @@ const admin = require("firebase-admin");
 const {addToAvailabilityBatch} = require("../utils/notificationBatch");
 const {sendNotificationToUsers, getCompanyMemberIds} = require("../utils/notifications");
 const {C} = require("../utils/paths");
+const {syncProblemCount} = require("../utils/problemCount");
 
 /*
  * Notify company admins/owners when a user confirms or declines availability.
@@ -54,9 +55,24 @@ exports.notifyUserStatusChange = onDocumentWritten({
      * pushes; a crew member dropping out of tomorrow's job is not routine, and
      * a manager finding out five minutes late may be five minutes they needed.
      */
-    const flaggedNow = !beforeData.problemFlaggedAt && afterData.problemFlaggedAt;
-    if (flaggedNow) {
-      await notifyProblemFlagged(companyId, eventId, userId, afterData.problemNote);
+    const wasFlagged = Boolean(beforeData.problemFlaggedAt);
+    const isFlagged = Boolean(afterData.problemFlaggedAt);
+
+    if (wasFlagged !== isFlagged) {
+      /*
+       * Keep the event's own tally in step either way.
+       *
+       * Clients read `problemCount` straight off the event they are already
+       * subscribed to, which is what lets the calendar badge a short-staffed
+       * job without every admin's phone streaming the whole company's response
+       * documents.
+       */
+      await syncProblemCount(companyId, eventId);
+
+      // Raising a flag is news; withdrawing one is not worth a push.
+      if (isFlagged) {
+        await notifyProblemFlagged(companyId, eventId, userId, afterData.problemNote);
+      }
       return null;
     }
 
