@@ -18,6 +18,17 @@ const C = {
   timeEntries: "timeEntries",
 
   /*
+   * When each user was last nudged about unanswered events.
+   *
+   * Written only by nudgePendingResponses, never read by either client, so it
+   * has no security rule — the Admin SDK bypasses rules and the default deny
+   * keeps clients out. Doc id is `${companyId}_${userId}`, matching the
+   * membership convention, so the interval is per company: someone who works
+   * for two caterers is nudged on each one's own schedule.
+   */
+  availabilityNudges: "availabilityNudges",
+
+  /*
    * Batch staging collections.
    *
    * The "V2" suffix is vestigial — it kept this queue apart from the v1

@@ -27,6 +27,7 @@ const { notifyAssignedWorkers } = require("./src/events/notifyAssignedWorkers");
 const { notifyEventChanged } = require("./src/events/notifyEventChanged");
 const { notifyNewEventWithoutAssignees } = require("./src/availability/notifyNewEventWithoutAssignees");
 const { notifyUserStatusChange } = require("./src/availability/notifyUserStatusChange");
+const { nudgePendingResponses } = require("./src/availability/nudgePendingResponses");
 const { processNotificationBatches } = require("./src/timesheets/processNotificationBatches");
 const { notifyTimeDecision } = require("./src/timesheets/notifyTimeDecision");
 const { notifyUserPassage } = require("./src/company/notifyUserPassage");
@@ -37,6 +38,7 @@ module.exports = {
     notifyEventChanged,
     notifyNewEventWithoutAssignees,
     notifyUserStatusChange,
+    nudgePendingResponses,
     processNotificationBatches,
     notifyTimeDecision,
     notifyUserPassage
