@@ -167,18 +167,35 @@ async function nudgeCompany(companyId, byUser) {
   }
 
   const prefs = prefsDoc.data();
-  if (prefs.enableAvailability === false) return;
 
-  const reminder = prefs.availabilityReminder || {};
-  if (reminder.enabled !== true) return;
+  /*
+   * One schedule per question, configured independently.
+   *
+   * A company can chase unanswered invitations daily and unconfirmed shifts
+   * hourly, or either alone. Sharing one interval would have forced the more
+   * urgent of the two down to the cadence of the less urgent.
+   */
+  const intervals = {
+    [AVAILABILITY]: intervalFor(prefs.availabilityReminder),
+    [ACKNOWLEDGEMENT]: intervalFor(prefs.acknowledgementReminder),
+  };
 
-  const intervalMs = ((reminder.hours || 0) * 60 + (reminder.minutes || 0)) * 60 * 1000;
-  if (intervalMs <= 0) {
-    // Zero would mean "nudge every time this runs", which is once an hour,
-    // forever. Treated as unconfigured rather than as consent to spam.
-    logger.log(`Company ${companyId} has a zero reminder interval, skipping`);
-    return;
+  // The availability question only exists where the feature does.
+  if (prefs.enableAvailability === false) intervals[AVAILABILITY] = 0;
+
+  /*
+   * AUTO-SILENCED when the company does not require acknowledgement.
+   *
+   * Nobody is being asked, so there is nothing to chase — and a reminder still
+   * firing behind a switched-off requirement is how a setting starts lying
+   * about what it does. Enforced here rather than trusting the settings screen
+   * to have cleared the schedule.
+   */
+  if (prefs.requireAssignmentAcknowledgement === false) {
+    intervals[ACKNOWLEDGEMENT] = 0;
   }
+
+  if (!intervals[AVAILABILITY] && !intervals[ACKNOWLEDGEMENT]) return;
 
   /*
    * Trim to the company's own today.
@@ -214,6 +231,9 @@ async function nudgeCompany(companyId, byUser) {
         .filter((item) => item.dateKey >= today)
         .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
       if (upcoming.length === 0) continue;
+
+      const intervalMs = intervals[question];
+      if (!intervalMs) continue;
 
       const field = `lastNudgedAt_${question}`;
       const last = stamps[field] ? stamps[field].toMillis() : 0;
@@ -279,6 +299,19 @@ async function nudgeCompany(companyId, byUser) {
   if (nudged > 0) {
     logger.log(`Sent ${nudged} nudges in company ${companyId}`);
   }
+}
+
+/**
+ * A reminder schedule as milliseconds, or 0 when it is not configured.
+ *
+ * Zero is deliberately NOT "remind every pass" — at the scheduler's hourly
+ * cadence that would be once an hour forever, which is what an admin who left
+ * the fields blank least wants.
+ */
+function intervalFor(schedule) {
+  if (!schedule || schedule.enabled !== true) return 0;
+  const ms = ((schedule.hours || 0) * 60 + (schedule.minutes || 0)) * 60 * 1000;
+  return ms > 0 ? ms : 0;
 }
 
 /**
