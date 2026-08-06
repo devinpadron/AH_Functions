@@ -15,10 +15,10 @@ const {C} = require("../utils/paths");
  *          availability screen lists, and answering is how a worker volunteers.
  *
  *   ASSIGNED, but has not acknowledged
- *       -> "you ARE working this — confirm you have seen it." Declining is not
- *          the answer here; the shift is already theirs. If the company allows
- *          it they can flag a problem from the event screen, which raises
- *          something for a manager rather than silently unstaffing the job.
+ *       -> "you ARE working this — confirm you have seen it." There is no
+ *          declining here and no way to object in the app: the shift is
+ *          already theirs, and anyone who cannot work it takes it up with
+ *          their manager directly.
  *
  * This function used to ask everyone the first question, so a worker already
  * scheduled on a shift was invited to decline availability for it — a reply
@@ -110,15 +110,7 @@ exports.nudgePendingResponses = onSchedule({
 
       let question = null;
       if (assigned) {
-        /*
-         * A flagged problem counts as answered. They have told the company
-         * they cannot make it and it is a manager's move now — chasing them
-         * for an acknowledgement would be asking them to agree with a shift
-         * they have already objected to.
-         */
-        if (!data.acknowledgedAt && !data.problemFlaggedAt) {
-          question = ACKNOWLEDGEMENT;
-        }
+        if (!data.acknowledgedAt) question = ACKNOWLEDGEMENT;
       } else if (data.status === "pending") {
         question = AVAILABILITY;
       }

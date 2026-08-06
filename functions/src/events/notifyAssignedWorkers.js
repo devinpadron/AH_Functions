@@ -2,7 +2,6 @@ const {onDocumentWritten} = require("firebase-functions/v2/firestore");
 const logger = require("firebase-functions/logger");
 const {sendNotificationToUsers} = require("../utils/notifications");
 const {C} = require("../utils/paths");
-const {syncProblemCount} = require("../utils/problemCount");
 
 // Function to notify users when they are assigned to an event
 exports.notifyAssignedWorkers = onDocumentWritten({
@@ -45,18 +44,6 @@ exports.notifyAssignedWorkers = onDocumentWritten({
 
     logger.log(`Event ${eventId} changes - Added: ${newlyAssignedWorkers.length}, Removed: ${removedWorkers.length}`);
 
-    /*
-     * Removing someone re-tallies the shortfall.
-     *
-     * A worker who flagged a problem and was then taken off the crew is no
-     * longer a shortfall — the manager has already dealt with it — but their
-     * response document still carries the flag. Without this the calendar
-     * would keep warning about a job that is fully staffed, which is the
-     * fastest way to teach an admin to ignore the warning.
-     */
-    if (removedWorkers.length > 0) {
-      await syncProblemCount(companyId, eventId);
-    }
 
     // Process newly assigned workers
     if (newlyAssignedWorkers.length > 0) {

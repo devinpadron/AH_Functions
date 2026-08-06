@@ -27,10 +27,6 @@ const CHANNEL_BY_TYPE = {
   timesheet_rejection: "timesheets",
   timesheet_rejection_batch: "timesheets",
 
-  // A crew member saying they cannot make a shift. Manager-facing, and it is
-  // the one on this switch that leaves a job potentially short-staffed.
-  assignment_problem: "team",
-
   new_user_joined: "team",
   user_left: "team",
   availability_confirmed: "team",
