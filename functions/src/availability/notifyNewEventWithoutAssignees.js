@@ -1,10 +1,10 @@
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
-const {getCompanyMemberIds} = require("../utils/notifications");
+const {getEventAudienceIds} = require("../utils/audience");
 const {C} = require("../utils/paths");
 
-// Function to notify all company users when a new event is created without assigned workers
+// Notifies the workers who can actually SEE a new unassigned event.
 exports.notifyNewEventWithoutAssignees = onDocumentCreated({
   document: `${C.events}/{eventId}`,
 }, async (event) => {
@@ -74,15 +74,20 @@ exports.notifyNewEventWithoutAssignees = onDocumentCreated({
 
     logger.log(`New event ${eventId} created without assigned workers, adding to notification batch`);
 
-    // Get all users in the company
+    // Work out who this event is actually for
     try {
-      // v1 listed Companies/{companyId}/Users, which had no status concept
-      // because leaving deleted the document. v2 soft-deletes, so this filters
-      // to active members — otherwise removed staff would be notified.
-      const userIds = await getCompanyMemberIds(companyId);
+      /*
+       * The event's AUDIENCE, not the whole company.
+       *
+       * This used to notify every active member, which predates worker groups:
+       * a job targeted at one group buzzed the entire company, and a restricted
+       * 1099 contractor was told about work they cannot see or accept. See
+       * ../utils/audience for the visibility rules this mirrors.
+       */
+      const userIds = await getEventAudienceIds(companyId, eventData);
 
       if (userIds.length === 0) {
-        logger.warn(`No active users found in company ${companyId}`);
+        logger.warn(`No one can see event ${eventId} in company ${companyId}`);
         return null;
       }
 
@@ -90,7 +95,23 @@ exports.notifyNewEventWithoutAssignees = onDocumentCreated({
       const eventTitle = eventData.title || "Unnamed Event";
       const eventDate = eventData.dateKey || "TBD"; // v1: eventData.date
 
-      // Add to batch for each user
+      /*
+       * The batch is still keyed by company, but the recipients now hang off
+       * each EVENT rather than off the batch.
+       *
+       * One list per batch cannot survive targeting: two events queued in the
+       * same five-minute window routinely have different audiences, and a
+       * single list would either union them — telling a bartender about the
+       * server shift — or let whichever event was written last decide who hears
+       * about the other. The drainer inverts these into one message per person.
+       */
+      const entry = {
+        eventId: eventId,
+        eventTitle: eventTitle,
+        eventDate: eventDate,
+        userIds: userIds
+      };
+
       const batchRef = admin.firestore()
         .collection(C.pendingNewEventNotifications)
         .doc(companyId);
@@ -102,12 +123,7 @@ exports.notifyNewEventWithoutAssignees = onDocumentCreated({
           // First event for this company
           transaction.set(batchRef, {
             companyId: companyId,
-            userIds: userIds,
-            events: [{
-              eventId: eventId,
-              eventTitle: eventTitle,
-              eventDate: eventDate
-            }],
+            events: [entry],
             lastUpdated: admin.firestore.FieldValue.serverTimestamp()
           });
         } else {
@@ -115,18 +131,10 @@ exports.notifyNewEventWithoutAssignees = onDocumentCreated({
           const batchData = doc.data();
           const events = batchData.events || [];
 
-          events.push({
-            eventId: eventId,
-            eventTitle: eventTitle,
-            eventDate: eventDate
-          });
+          events.push(entry);
 
           transaction.update(batchRef, {
             events,
-            // Refresh the recipient list too: the batch window is open for
-            // minutes, and v1 pinned whoever was a member when the FIRST event
-            // landed.
-            userIds: userIds,
             lastUpdated: admin.firestore.FieldValue.serverTimestamp()
           });
         }

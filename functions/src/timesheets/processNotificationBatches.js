@@ -257,10 +257,42 @@ exports.processNotificationBatches = onSchedule({
       const newEventPromises = newEventBatchSnapshot.docs.map(async (doc) => {
         const batchData = doc.data();
         const companyId = batchData.companyId;
-        const userIds = batchData.userIds || [];
         const events = batchData.events || [];
 
-        if (events.length === 0 || userIds.length === 0) {
+        if (events.length === 0) {
+          await doc.ref.delete();
+          return;
+        }
+
+        /*
+         * Invert the batch: each event carries its own audience, and what has
+         * to be sent is one message per PERSON covering the events that person
+         * can see.
+         *
+         * Counting the batch's events instead would leak the ones they cannot:
+         * a worker invited to one of three queued jobs would be told "3 new
+         * events are available" and find one waiting for them.
+         */
+        const eventsByUser = new Map();
+        for (const event of events) {
+          /*
+           * Batches written before audiences existed kept a single company-wide
+           * list on the batch document. The queue is drained every five
+           * minutes, so at most one window's worth of these can be in flight
+           * across a deploy — but dropping them would be five minutes of
+           * notifications silently lost.
+           */
+          const recipients = Array.isArray(event.userIds)
+            ? event.userIds
+            : (batchData.userIds || []);
+
+          for (const userId of recipients) {
+            if (!eventsByUser.has(userId)) eventsByUser.set(userId, []);
+            eventsByUser.get(userId).push(event);
+          }
+        }
+
+        if (eventsByUser.size === 0) {
           await doc.ref.delete();
           return;
         }
@@ -269,40 +301,59 @@ exports.processNotificationBatches = onSchedule({
         const companyDoc = await admin.firestore().collection(C.companies).doc(companyId).get();
         const companyName = companyDoc.exists ? (companyDoc.data().name || "your company") : "your company";
 
-        // Build notification based on number of events
-        let title = "";
-        let body = "";
-        let type = "";
-
-        if (events.length === 1) {
-          // Single event
-          const event = events[0];
-          title = "New Event Available";
-          body = `A new event "${event.eventTitle}" is available for ${companyName}. Please confirm your availability for ${event.eventDate}.`;
-          type = "new_event_unassigned";
-        } else {
-          // Multiple events
-          title = "New Events Available";
-          body = `${events.length} new events are available for ${companyName}. Please confirm your availability.`;
-          type = "new_events_batch";
+        /*
+         * Collapse users who can see exactly the same events back into one
+         * send. In the common case — a company with no targeting, or one
+         * targeted event in the window — that is a single group again, so this
+         * costs nothing over the company-wide send it replaces.
+         *
+         * Events keep their batch order for every user, so the signature is
+         * stable without sorting.
+         */
+        const audiences = new Map();
+        for (const [userId, visible] of eventsByUser) {
+          const key = visible.map((event) => event.eventId).join("|");
+          if (!audiences.has(key)) audiences.set(key, {events: visible, userIds: []});
+          audiences.get(key).userIds.push(userId);
         }
 
-        // Send the notification to all users
-        await sendNotificationToUsers(
-          userIds,
-          title,
-          body,
-          {
-            companyId: companyId,
-            screenName: "EventList",
-            eventCount: events.length.toString(),
-            type: type
+        for (const audience of audiences.values()) {
+          const visible = audience.events;
+
+          // Build notification based on number of events THIS group can see
+          let title = "";
+          let body = "";
+          let type = "";
+
+          if (visible.length === 1) {
+            // Single event
+            const event = visible[0];
+            title = "New Event Available";
+            body = `A new event "${event.eventTitle}" is available for ${companyName}. Please confirm your availability for ${event.eventDate}.`;
+            type = "new_event_unassigned";
+          } else {
+            // Multiple events
+            title = "New Events Available";
+            body = `${visible.length} new events are available for ${companyName}. Please confirm your availability.`;
+            type = "new_events_batch";
           }
-        );
+
+          await sendNotificationToUsers(
+            audience.userIds,
+            title,
+            body,
+            {
+              companyId: companyId,
+              screenName: "EventList",
+              eventCount: visible.length.toString(),
+              type: type
+            }
+          );
+        }
 
         // Delete the batch after processing
         await doc.ref.delete();
-        logger.log(`Processed new event batch for company ${companyId}, sent to ${userIds.length} users about ${events.length} events`);
+        logger.log(`Processed new event batch for company ${companyId}, sent to ${eventsByUser.size} users about ${events.length} events in ${audiences.size} audience group(s)`);
       });
 
       await Promise.all(newEventPromises);

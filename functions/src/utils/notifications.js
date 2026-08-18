@@ -1,6 +1,7 @@
 const admin = require("firebase-admin");
 const logger = require("firebase-functions/logger");
 const {C} = require("./paths");
+const {getCompanyMembers} = require("./audience");
 
 /*
  * Which preference switch each notification type answers to.
@@ -9,6 +10,11 @@ const {C} = require("./paths");
  * from this map is UNFILTERED and always sends — an unexpected buzz is a much
  * smaller failure than a typo here silently muting a whole category with
  * nothing on screen to explain it.
+ *
+ * A value may be an ARRAY, which means "send if ANY of these is on". Only the
+ * mixed availability batches need it: one push carrying both confirmations and
+ * declines is still wanted by a manager who asked for either, and picking one
+ * of the two switches to own it would drop pushes the manager did ask for.
  */
 const CHANNEL_BY_TYPE = {
   assignment: "events",
@@ -27,17 +33,53 @@ const CHANNEL_BY_TYPE = {
   timesheet_rejection: "timesheets",
   timesheet_rejection_batch: "timesheets",
 
-  new_user_joined: "team",
-  user_left: "team",
-  availability_confirmed: "team",
-  availability_confirmed_batch: "team",
-  availability_confirmed_multi_event: "team",
-  availability_declined: "team",
-  availability_declined_batch: "team",
-  availability_declined_multi_event: "team",
-  availability_mixed_batch: "team",
-  availability_mixed_multi_event: "team",
+  new_user_joined: "teamMembers",
+  user_left: "teamMembers",
+
+  availability_confirmed: "availabilityConfirmed",
+  availability_confirmed_batch: "availabilityConfirmed",
+  availability_confirmed_multi_event: "availabilityConfirmed",
+
+  availability_declined: "availabilityDeclined",
+  availability_declined_batch: "availabilityDeclined",
+  availability_declined_multi_event: "availabilityDeclined",
+
+  availability_mixed_batch: ["availabilityConfirmed", "availabilityDeclined"],
+  availability_mixed_multi_event: ["availabilityConfirmed", "availabilityDeclined"],
 };
+
+/*
+ * The three switches that replaced the single `team` one.
+ *
+ * A membership last written by an app build older than the split has `team` and
+ * none of these, so `prefs.teamMembers` is undefined for a manager who very
+ * deliberately turned the old switch off. Reading that as "not false, therefore
+ * send" would un-mute every manager who had used the setting, the moment this
+ * deployed. See wantsChannel.
+ */
+const LEGACY_TEAM_CHANNELS = [
+  "teamMembers",
+  "availabilityConfirmed",
+  "availabilityDeclined",
+];
+
+/**
+ * Whether one channel is switched on, honouring the pre-split shape.
+ *
+ * Absent means ON everywhere else in this file, and it still does — the legacy
+ * fallback only applies when the specific key is missing AND the old `team`
+ * switch says otherwise. Once the app writes the new keys they win outright,
+ * which is what lets a manager re-enable declines while leaving the rest off.
+ *
+ * @param {Object} prefs - the membership's `notifications` object
+ * @param {string} channel
+ * @returns {boolean}
+ */
+function wantsChannel(prefs, channel) {
+  if (prefs[channel] !== undefined) return prefs[channel] !== false;
+  if (LEGACY_TEAM_CHANNELS.includes(channel)) return prefs.team !== false;
+  return true;
+}
 
 /**
  * Drops the users who have muted this kind of notification.
@@ -72,11 +114,14 @@ async function filterByPreference(userIds, companyId, type) {
       docs.push(...(await db.getAll(...refs)));
     }
 
+    // "Send if ANY of them is on" — see CHANNEL_BY_TYPE.
+    const channels = Array.isArray(channel) ? channel : [channel];
+
     return userIds.filter((userId, index) => {
       const prefs = docs[index].exists ? docs[index].data().notifications : null;
       if (!prefs) return true;
       if (prefs.enabled === false) return false;
-      return prefs[channel] !== false;
+      return channels.some((c) => wantsChannel(prefs, c));
     });
   } catch (error) {
     logger.error(`Error reading notification preferences for ${companyId}:`, error);
@@ -198,27 +243,25 @@ async function sendNotificationToUsers(userIds, title, body, data = {}) {
  *   - v2 soft-deletes members (`status: "removed"`) where v1 deleted the
  *     document, so an unfiltered query would notify people who have left.
  *
+ * Note this is EVERY active member, which is the right recipient list only when
+ * the notification really is company-wide (someone joined, someone left). For
+ * anything about a specific event, see getEventAudienceIds in ./audience —
+ * a targeted event is not visible to the whole company.
+ *
  * @param {string} companyId
  * @param {string[]|null} roles - e.g. ["manager", "owner"], or null for all
  * @returns {Promise<string[]>} user ids
  */
 async function getCompanyMemberIds(companyId, roles = null) {
-  let query = admin.firestore()
-    .collection(C.memberships)
-    .where('companyId', '==', companyId)
-    .where('status', '==', 'active');
-
-  if (roles) {
-    query = query.where('role', 'in', roles);
-  }
-
-  const snapshot = await query.get();
-  return snapshot.docs.map(doc => doc.data().userId).filter(Boolean);
+  const members = await getCompanyMembers(companyId, roles);
+  return members.map(member => member.userId).filter(Boolean);
 }
 
 module.exports = {
   sendNotificationToUsers,
   getCompanyMemberIds,
   // Exported for the type-coverage check in tools/, not for callers.
-  CHANNEL_BY_TYPE
+  CHANNEL_BY_TYPE,
+  // Likewise: the pre-split fallback is worth being able to assert on directly.
+  wantsChannel
 };
