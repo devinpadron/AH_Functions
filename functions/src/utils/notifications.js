@@ -36,6 +36,12 @@ const CHANNEL_BY_TYPE = {
   new_user_joined: "teamMembers",
   user_left: "teamMembers",
 
+  // Event tasks. `tasksOverdue` is manager-facing but deliberately NOT one of
+  // LEGACY_TEAM_CHANNELS below: it did not exist when the single `team` switch
+  // did, so a manager with `team: false` never chose to silence it.
+  task_reminder: "tasks",
+  task_overdue: "tasksOverdue",
+
   availability_confirmed: "availabilityConfirmed",
   availability_confirmed_batch: "availabilityConfirmed",
   availability_confirmed_multi_event: "availabilityConfirmed",

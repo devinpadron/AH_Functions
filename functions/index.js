@@ -31,6 +31,7 @@ const { nudgePendingResponses } = require("./src/availability/nudgePendingRespon
 const { processNotificationBatches } = require("./src/timesheets/processNotificationBatches");
 const { notifyTimeDecision } = require("./src/timesheets/notifyTimeDecision");
 const { notifyUserPassage } = require("./src/company/notifyUserPassage");
+const { remindEventTasks } = require("./src/tasks/remindEventTasks");
 
 // Export all functions
 module.exports = {
@@ -41,5 +42,6 @@ module.exports = {
     nudgePendingResponses,
     processNotificationBatches,
     notifyTimeDecision,
-    notifyUserPassage
+    notifyUserPassage,
+    remindEventTasks
 };

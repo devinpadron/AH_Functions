@@ -18,6 +18,13 @@ const C = {
   timeEntries: "timeEntries",
 
   /*
+   * One document per (event, task template), written by the app. This repo
+   * only reads them and advances their reminder clocks — see
+   * src/tasks/remindEventTasks.js.
+   */
+  eventTasks: "eventTasks",
+
+  /*
    * When each user was last nudged about unanswered events.
    *
    * Written only by nudgePendingResponses, never read by either client, so it
