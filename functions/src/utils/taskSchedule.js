@@ -71,4 +71,56 @@ function computeNextReminderMs(input) {
   return best;
 }
 
-module.exports = {anchorMs, repeatGapSeconds, computeNextReminderMs};
+/**
+ * When managers should next hear about a task, or null for never.
+ *
+ * A VERBATIM PORT of `computeNextManagerAlertMs` from the same file in the app,
+ * types removed. Same warning as above: both sides write `overdueAlertAt`.
+ *
+ * ONE clock carries up to three kinds of send, in order:
+ *
+ *   the warning   `warningSeconds` BEFORE the due time: "this is due soon and
+ *                 nobody has done it". Skipped once the due time has passed.
+ *   the alert     `alertSeconds` AFTER the due time.
+ *   its repeats   one `repeatSeconds` gap after the last send, until done.
+ *
+ * `alertedMs` is the most recent send of ANY of them: nothing sent means start
+ * at the top; a send earlier than the first overdue alert means that alert is
+ * still owed; anything later means only repeats are left.
+ */
+function computeNextManagerAlertMs(input) {
+  if (!input.hasPending) return null;
+
+  const warningSeconds = Math.max(0, input.warningSeconds || 0);
+  const repeatSeconds = Math.max(0, input.repeatSeconds || 0);
+  const alertOn =
+    input.alertSeconds !== null && input.alertSeconds !== undefined;
+  const firstAlertMs = alertOn
+    ? input.dueMs + Math.max(0, input.alertSeconds || 0) * 1000
+    : null;
+
+  let nextMs;
+  if (input.alertedMs === null) {
+    nextMs =
+      warningSeconds > 0 && input.nowMs < input.dueMs
+        ? input.dueMs - warningSeconds * 1000
+        : firstAlertMs;
+  } else if (firstAlertMs !== null && input.alertedMs < firstAlertMs) {
+    nextMs = firstAlertMs;
+  } else {
+    nextMs =
+      alertOn && repeatSeconds > 0
+        ? input.alertedMs + repeatSeconds * 1000
+        : null;
+  }
+
+  // Anything that could only fire after expiry is not scheduled at all.
+  return nextMs !== null && nextMs <= input.expiresMs ? nextMs : null;
+}
+
+module.exports = {
+  anchorMs,
+  repeatGapSeconds,
+  computeNextReminderMs,
+  computeNextManagerAlertMs,
+};

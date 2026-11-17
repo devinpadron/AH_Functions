@@ -3,7 +3,7 @@ const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
 const {sendNotificationToUsers, getCompanyMemberIds} = require("../utils/notifications");
 const {ADMIN_ROLES} = require("../utils/audience");
-const {computeNextReminderMs} = require("../utils/taskSchedule");
+const {computeNextReminderMs, computeNextManagerAlertMs} = require("../utils/taskSchedule");
 const {C} = require("../utils/paths");
 
 /*
@@ -14,8 +14,13 @@ const {C} = require("../utils/paths");
  *
  *   task_reminder  to each worker who still owes a task, when one of the
  *                  task's reminder rules falls due.
- *   task_overdue   to the company's managers, once, when a task is still open
- *                  some time after it was due.
+ *   task_overdue   to managers, about a task nobody has done: a WARNING
+ *                  `dueWarningSeconds` before it is due, an ALERT
+ *                  `overdueAlertSeconds` after, and repeats of the alert every
+ *                  `overdueAlertRepeatSeconds`. All three ride one clock,
+ *                  `overdueAlertAt`, and one push type — the wording is chosen
+ *                  here from whether the due time has passed. WHICH managers
+ *                  is `overdueAlertUserIds` (empty means all of them).
  *
  * The clients do the scheduling. Every `eventTasks` document carries a
  * materialized `nextReminderAt` and `overdueAlertAt`, written by the app when
@@ -218,8 +223,30 @@ async function processCompany(companyId, work, now) {
 
     if (quiet) continue;
 
-    // Cleared whatever happens next: the alert is sent once, never repeated.
-    writes.push([doc.ref, {overdueAlertAt: null, overdueAlertedAt: nowStamp}]);
+    /*
+     * Moved on or cleared whatever happens next, for the reason the reminder
+     * clock is: a failed send must not leave the document due again in an hour.
+     *
+     * The app runs this same function, with `overdueAlertedAt` where this
+     * passes `now`, when the event is next saved or the task reopened.
+     */
+    const taskDueMs = task.dueAt ? task.dueAt.toMillis() : now;
+    const taskEndMs = task.eventEndAt ? task.eventEndAt.toMillis() : taskDueMs;
+    const nextAlertMs = computeNextManagerAlertMs({
+      dueMs: taskDueMs,
+      warningSeconds: task.dueWarningSeconds,
+      alertSeconds: task.overdueAlertSeconds,
+      repeatSeconds: task.overdueAlertRepeatSeconds,
+      alertedMs: now,   // the send that is about to happen
+      nowMs: now,
+      expiresMs: task.expiresAt ? task.expiresAt.toMillis() : taskEndMs + 7 * 24 * 3600 * 1000,
+      hasPending: true,
+    });
+
+    writes.push([doc.ref, {
+      overdueAlertAt: nextAlertMs === null ? null : admin.firestore.Timestamp.fromMillis(nextAlertMs),
+      overdueAlertedAt: nowStamp,
+    }]);
     overdue.push({...task, id: doc.id});
   }
 
@@ -278,30 +305,99 @@ async function processCompany(companyId, work, now) {
   }
 
   if (overdue.length > 0) {
-    overdue.sort((a, b) => dueMs(a) - dueMs(b));
-    const first = overdue[0];
-    const count = overdue.length;
     const managerIds = await getCompanyMemberIds(companyId, ADMIN_ROLES);
+    const byManager = overdueByManager(overdue, managerIds);
 
-    // One push to managers for the whole run, not one per task: a morning
-    // where five tasks slipped overnight should not be five buzzes.
-    await sendNotificationToUsers(
-      managerIds,
-      count === 1 ? "Task overdue" : "Tasks overdue",
-      count === 1
-        ? `${quote(first.title)} for ${first.eventTitle || "an event"} is still not done.`
-        : `${count} event tasks are past due, starting with ${quote(first.title)} for ${first.eventTitle || "an event"}.`,
-      {
-        companyId: companyId,
-        screenName: "Details",
-        type: "task_overdue",
-        pendingCount: String(count),
-        eventId: first.eventId,
+    /*
+     * One push per manager per KIND for the whole run, not one per task: a
+     * morning where five tasks slipped overnight should not be five buzzes.
+     *
+     * "Due soon" and "overdue" are kept apart because they ask for different
+     * things — one can still be rescued — and a single push could only word
+     * one of them. Which a task is, is simply whether its due time has passed:
+     * a warning held back by quiet hours until after the deadline is, by then,
+     * an overdue alert and says so.
+     */
+    for (const [managerId, tasks] of byManager) {
+      tasks.sort((a, b) => dueMs(a) - dueMs(b));
+      const late = tasks.filter((task) => !task.dueAt || dueMs(task) <= now);
+      const soon = tasks.filter((task) => task.dueAt && dueMs(task) > now);
+
+      if (late.length > 0) {
+        const first = late[0];
+        const count = late.length;
+        await sendNotificationToUsers(
+          [managerId],
+          count === 1 ? "Task overdue" : "Tasks overdue",
+          count === 1
+            ? `${quote(first.title)} for ${first.eventTitle || "an event"} is still not done.`
+            : `${count} event tasks are past due, starting with ${quote(first.title)} for ${first.eventTitle || "an event"}.`,
+          {
+            companyId: companyId,
+            screenName: "Details",
+            type: "task_overdue",
+            pendingCount: String(count),
+            eventId: first.eventId,
+          }
+        );
       }
-    );
 
-    logger.log(`Alerted managers to ${count} overdue tasks in company ${companyId}`);
+      if (soon.length > 0) {
+        const first = soon[0];
+        const count = soon.length;
+        await sendNotificationToUsers(
+          [managerId],
+          count === 1 ? "Task due soon" : "Tasks due soon",
+          count === 1
+            ? `${quote(first.title)} for ${first.eventTitle || "an event"} is not done yet — ${dueLabel(first, now, timeZone)}.`
+            : `${count} event tasks are due soon and not done, starting with ${quote(first.title)} for ${first.eventTitle || "an event"}.`,
+          {
+            companyId: companyId,
+            screenName: "Details",
+            // Deliberately the same type as the overdue alert: the payload
+            // contract is frozen, and one mute switch covering "tasks nobody
+            // has done" is what a manager would expect anyway.
+            type: "task_overdue",
+            pendingCount: String(count),
+            eventId: first.eventId,
+          }
+        );
+      }
+    }
+
+    logger.log(`Alerted ${byManager.size} managers to ${overdue.length} overdue tasks in company ${companyId}`);
   }
+}
+
+/**
+ * Who hears about which overdue task: managerId -> [task].
+ *
+ * A task's `overdueAlertUserIds` names its recipients. They are only ever
+ * honoured as a NARROWING of the company's active managers and owners —
+ * someone named who has since left, or been made a worker, gets nothing, so
+ * the field can never address a push to a person the rules would not let read
+ * the task's event.
+ *
+ * Falls back to every manager when the list is empty or absent (the default,
+ * and every task written before the field existed) AND when nobody named is
+ * still a manager. An alert the company asked for reaching the wrong manager
+ * is a smaller failure than it reaching nobody.
+ */
+function overdueByManager(tasks, managerIds) {
+  const managers = new Set(managerIds);
+  const byManager = new Map();
+
+  for (const task of tasks) {
+    const named = (task.overdueAlertUserIds || []).filter((id) => managers.has(id));
+    const recipients = named.length > 0 ? named : managerIds;
+
+    for (const managerId of recipients) {
+      if (!byManager.has(managerId)) byManager.set(managerId, []);
+      byManager.get(managerId).push(task);
+    }
+  }
+
+  return byManager;
 }
 
 /** Applies [ref, patch] pairs in batches. */
@@ -360,4 +456,4 @@ function dueLabel(task, now, timeZone) {
 }
 
 // Exported for tests, not for callers.
-exports._internal = {processCompany, isQuietHour, dueLabel};
+exports._internal = {processCompany, isQuietHour, dueLabel, overdueByManager};
